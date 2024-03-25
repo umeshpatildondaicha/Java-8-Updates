@@ -1,4 +1,4 @@
-package Java8Updates;
+package functional_interface;
 
 import java.util.function.Consumer;
 import java.util.function.Function;
