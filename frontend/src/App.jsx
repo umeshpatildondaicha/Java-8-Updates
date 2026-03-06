@@ -55,7 +55,7 @@ export default function App() {
     }
   }, [])
 
-  const has3D     = result.type === '3d' && result.meshes?.length > 0
+  const has3D     = result.type === '3d' && !!result.volume_url
   const hasPreviews = result.type === '3d' && result.previews
   const hasImage  = result.type === '2d' && result.image_url
   const hasReport = result.report && Object.keys(result.report).length > 0

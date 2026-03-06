@@ -85,29 +85,33 @@ def run_threshold_segmentation(nifti_path: str, output_dir: str) -> dict:
 
     # CT scan ranges (Hounsfield Units)
     hu_min = data.min()
+    found_any = False
 
     # Bone: HU 400-1900
     if hu_min < -100:  # Looks like a proper CT
         bone_mask = ((data >= 400) & (data <= 1900)).astype(np.uint8)
-        if bone_mask.sum() > 100:
+        if bone_mask.sum() > 10:
             path = save_mask(bone_mask, "bone")
             segments["bone"] = {"path": path, "color": [240, 220, 160]}
+            found_any = True
 
         # Lung: HU -950 to -400
         lung_mask = ((data >= -950) & (data <= -400)).astype(np.uint8)
-        if lung_mask.sum() > 100:
+        if lung_mask.sum() > 10:
             lung_clean = clean_mask(lung_mask)
             path = save_mask(lung_clean, "lung_left")
             segments["lung_left"] = {"path": path, "color": [0, 220, 80]}
+            found_any = True
 
         # Soft tissue: HU 0-100
         soft_mask = ((data >= 0) & (data <= 100)).astype(np.uint8)
-        if soft_mask.sum() > 100:
+        if soft_mask.sum() > 10:
             path = save_mask(soft_mask, "soft_tissue")
             segments["soft_tissue"] = {"path": path, "color": [200, 150, 100]}
+            found_any = True
 
-    else:
-        # MRI or unknown: use Otsu thresholding
+    if not found_any:
+        # MRI, single-slice DCM, or CT with no usable HU ranges: use Otsu thresholding
         import SimpleITK as sitk
         sitk_img = sitk.ReadImage(nifti_path)
         otsu = sitk.OtsuThresholdImageFilter()
