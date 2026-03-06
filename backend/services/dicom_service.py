@@ -88,11 +88,66 @@ def dicom_series_to_nifti(dicom_dir: str, output_path: str) -> str:
 
 
 def single_dicom_to_nifti(dicom_path: str, output_path: str) -> str:
-    """Convert a single DICOM file to NIfTI."""
+    """Convert a single DICOM file to NIfTI. Tries SimpleITK first, then pydicom fallback."""
     import SimpleITK as sitk
 
-    image = sitk.ReadImage(dicom_path)
-    sitk.WriteImage(image, output_path)
+    try:
+        image = sitk.ReadImage(dicom_path)
+        sitk.WriteImage(image, output_path)
+        return output_path
+    except Exception as sitk_err:
+        print(f"[DicomService] SimpleITK failed ({sitk_err}), trying pydicom fallback...")
+        return _pydicom_to_nifti(dicom_path, output_path)
+
+
+def _pydicom_to_nifti(dicom_path: str, output_path: str) -> str:
+    """
+    Pydicom + nibabel fallback for compressed / enhanced DICOM files.
+    Handles: JPEG 2000, RLE, multi-frame (enhanced DICOM), CE-MRA, etc.
+    """
+    import pydicom
+    import nibabel as nib
+
+    ds = pydicom.dcmread(dicom_path, force=True)
+
+    # Decompress if needed (requires pydicom[gdcm] or pylibjpeg)
+    if hasattr(ds, 'file_meta'):
+        try:
+            ds.decompress()
+        except Exception:
+            pass  # Already uncompressed or handler missing — pixel_array may still work
+
+    pixel_array = ds.pixel_array  # shape: (rows, cols) or (frames, rows, cols)
+
+    # Apply DICOM rescale slope/intercept (converts to HU for CT, signal for MR)
+    arr = pixel_array.astype(np.float32)
+    slope = float(getattr(ds, 'RescaleSlope', 1.0))
+    intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+    arr = arr * slope + intercept
+
+    # Ensure 3D: (X, Y, Z)
+    if arr.ndim == 2:
+        arr = arr[:, :, np.newaxis]
+    elif arr.ndim == 3:
+        # multi-frame: (frames, rows, cols) → (rows, cols, frames)
+        arr = arr.transpose(1, 2, 0)
+
+    # Build affine from DICOM spatial metadata
+    affine = np.eye(4, dtype=np.float64)
+    try:
+        ps = ds.PixelSpacing
+        affine[0, 0] = float(ps[0])
+        affine[1, 1] = float(ps[1])
+    except Exception:
+        pass
+    try:
+        affine[2, 2] = float(getattr(ds, 'SliceThickness', 1.0))
+    except Exception:
+        pass
+
+    nib_img = nib.Nifti1Image(arr, affine)
+    nib.save(nib_img, output_path)
+    print(f"[DicomService] pydicom fallback: saved {arr.shape} volume to {output_path}")
     return output_path
 
 
@@ -118,16 +173,18 @@ def convert_to_nifti(file_path: str, output_path: str, file_type: str, extract_d
         return output_path
 
     if file_type == "dicom":
-        # Check if it's a directory of DICOMs
         p = Path(file_path)
         if p.is_dir():
             return dicom_series_to_nifti(file_path, output_path)
         else:
-            # Single file - try as series from parent dir
+            # 1) Try reading the whole series from the parent directory
             try:
                 return dicom_series_to_nifti(str(p.parent), output_path)
             except Exception:
-                return single_dicom_to_nifti(file_path, output_path)
+                pass
+            # 2) Try SimpleITK single file (handles enhanced/multi-frame DICOM)
+            # 3) Falls back to pydicom inside single_dicom_to_nifti
+            return single_dicom_to_nifti(file_path, output_path)
 
     if file_type == "zip":
         if extract_dir is None:
